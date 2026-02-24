@@ -115,15 +115,16 @@ class CsvWriter {
     // BOM + ヘッダー行
     fs.writeFileSync(
       filePath,
-      "\uFEFF" + "画像ファイル名,使用モデル,レスポンス\n",
+      "\uFEFF" + "画像ファイル名,使用モデル,応答時間,レスポンス\n",
       "utf-8"
     );
   }
 
-  append(imageName, model, response) {
+  append(imageName, model, elapsed, response) {
     const line = [
       escapeCsv(imageName),
       escapeCsv(model),
+      escapeCsv(elapsed),
       escapeCsv(response),
     ].join(",");
     fs.appendFileSync(this.filePath, line + "\n", "utf-8");
@@ -523,7 +524,7 @@ async function main() {
         if (!modelSelected) {
           const errMsg = `[スキップ] モデル "${model}" が見つかりませんでした`;
           log(errMsg);
-          csv.append(image.name, model, errMsg);
+          csv.append(image.name, model, "-", errMsg);
           skipCount++;
           continue;
         }
@@ -532,19 +533,22 @@ async function main() {
         await uploadImage(page, image.path);
 
         // 4. プロンプトを入力して送信
+        const startTime = Date.now();
         await sendPrompt(page, prompt);
 
         // 5. 回答を待機して取得
         const response = await waitForResponseAndExtract(page);
+        const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+        log(`  応答時間: ${elapsedSec}秒`);
 
         // 6. CSVに書き込み
-        csv.append(image.name, model, response);
+        csv.append(image.name, model, `${elapsedSec}秒`, response);
         successCount++;
         log(`${progress} 完了!`);
       } catch (err) {
         const errMsg = `[エラー] ${err.message}`;
         log(`${progress} ${errMsg}`);
-        csv.append(image.name, model, errMsg);
+        csv.append(image.name, model, "-", errMsg);
         skipCount++;
       }
     }
