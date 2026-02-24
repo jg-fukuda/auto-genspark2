@@ -6,6 +6,7 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const readline = require("readline");
 
 // --- 定数 ---
 const GENSPARK_CHAT_URL = "https://www.genspark.ai/agents?type=ai_chat";
@@ -42,6 +43,23 @@ function escapeCsv(value) {
 function log(msg) {
   const ts = new Date().toLocaleTimeString("ja-JP");
   console.log(`[${ts}] ${msg}`);
+}
+
+/**
+ * コンソールでユーザーの Enter 入力を待つ
+ * ブラウザは開いたまま、手動操作を促してから再開できる
+ */
+function waitForEnter(message) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(message, () => {
+      rl.close();
+      resolve();
+    });
+  });
 }
 
 // --- 設定ファイル読み込み ---
@@ -216,9 +234,27 @@ async function uploadImage(page, imagePath) {
   // TODO: add-entry-option-item が複数ある場合、「ローカルファイル」のテキストを持つものを選ぶ必要があります
   //       現在は最初の add-entry-option-item をクリックしています。
   //       正しいものが選ばれない場合は、テキストで絞り込むかインデックスを変更してください。
-  const optionItems = await page.$$(".add-entry-option-item");
+  let optionItems = await page.$$(".add-entry-option-item");
   if (optionItems.length === 0) {
-    throw new Error("add-entry-option-item が見つかりません");
+    log("  [警告] add-entry-option-item が見つかりません。手動操作を待機します。");
+    log("  ブラウザ上で状況を確認してください（ログイン切れの可能性あり）。");
+    await waitForEnter("\n>>> 問題を解消したら Enter を押してください... ");
+
+    // ページをリロードして再試行
+    await navigateToNewChat(page);
+    await sleep(DELAY_BETWEEN_ACTIONS);
+
+    // +ボタンを再クリック
+    const retryAddBtn = await page.$(".add-entry-btn");
+    if (retryAddBtn) {
+      await retryAddBtn.click();
+      await sleep(DELAY_BETWEEN_ACTIONS);
+    }
+
+    optionItems = await page.$$(".add-entry-option-item");
+    if (optionItems.length === 0) {
+      throw new Error("add-entry-option-item が再試行後も見つかりません");
+    }
   }
 
   // テキストに「ローカル」「ファイル」「Local」「File」「Upload」のいずれかを含むものを探す
@@ -421,17 +457,20 @@ async function main() {
   });
   const page = await context.newPage();
 
-  // ログインチェック
-  const isLoggedIn = await checkLogin(page);
+  // ログインチェック（未ログインなら手動ログインを待機）
+  let isLoggedIn = await checkLogin(page);
   if (!isLoggedIn) {
-    log("[致命的エラー] Gensparkにログインしていません。実行を中止します。");
-    log("ブラウザでGensparkにログインしてから再実行してください。");
-    log(
-      'ヒント: 手動ログイン後に npx playwright codegen で auth.json を取得し、'
-    );
-    log("       context生成時に storageState として渡すことも可能です。");
-    await browser.close();
-    process.exit(1);
+    log("[警告] Gensparkにログインしていません。");
+    log("開いたブラウザ上で手動ログインしてください。");
+    await waitForEnter("\n>>> ログインが完了したら Enter を押してください... ");
+
+    // 再度チャットページに移動してログイン確認
+    isLoggedIn = await checkLogin(page);
+    if (!isLoggedIn) {
+      log("[致命的エラー] ログインが確認できませんでした。実行を中止します。");
+      await browser.close();
+      process.exit(1);
+    }
   }
   log("ログイン確認OK\n");
 
