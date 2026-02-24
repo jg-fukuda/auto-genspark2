@@ -15,12 +15,15 @@ const DELAY_BETWEEN_ACTIONS = 1500; // 操作間の待ち時間(ms)
 
 // --- ユーティリティ ---
 
-function today() {
+function timestamp() {
   const d = new Date();
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}_${hh}${mi}${ss}`;
 }
 
 function sleep(ms) {
@@ -398,7 +401,7 @@ async function main() {
   log(`合計実行回数: ${models.length * images.length}\n`);
 
   // CSV準備
-  const csvPath = path.resolve(__dirname, "dest", `${today()}.csv`);
+  const csvPath = path.resolve(__dirname, "dest", `${timestamp()}.csv`);
   const csv = new CsvWriter(csvPath);
   log(`出力先: ${csvPath}\n`);
 

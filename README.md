@@ -42,7 +42,7 @@ npm run setup
 │   ├── sample1.png
 │   └── sample2.jpg
 ├── dest/             # CSV 出力先（自動作成されます）
-│   └── 2026-02-24.csv
+│   └── 2026-02-24_153012.csv
 └── README.md
 ```
 
@@ -94,7 +94,7 @@ npm start
    - 画像をアップロード
    - プロンプトを送信
    - 回答を待って取得
-3. 結果を `dest/YYYY-MM-DD.csv` に出力
+3. 結果を `dest/YYYY-MM-DD_HHmmss.csv` に出力
 
 ### 4. 出力結果
 
