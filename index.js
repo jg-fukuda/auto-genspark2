@@ -1,0 +1,500 @@
+// ============================================================
+// Genspark Model Comparator
+// 複数のAIモデルに画像+プロンプトを送信し回答を比較するツール
+// ============================================================
+
+const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
+
+// --- 定数 ---
+const GENSPARK_CHAT_URL = "https://www.genspark.ai/agents?type=ai_chat";
+const TIMEOUT_NAV = 30000;
+const TIMEOUT_RESPONSE = 180000; // 回答待ち最大3分
+const DELAY_BETWEEN_ACTIONS = 1500; // 操作間の待ち時間(ms)
+
+// --- ユーティリティ ---
+
+function today() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** CSV用にフィールドをエスケープ */
+function escapeCsv(value) {
+  const str = String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (str.includes('"') || str.includes(",") || str.includes("\n")) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
+}
+
+function log(msg) {
+  const ts = new Date().toLocaleTimeString("ja-JP");
+  console.log(`[${ts}] ${msg}`);
+}
+
+// --- 設定ファイル読み込み ---
+
+function loadPrompt() {
+  const p = path.resolve(__dirname, "prompt.txt");
+  if (!fs.existsSync(p)) {
+    throw new Error("prompt.txt が見つかりません");
+  }
+  return fs.readFileSync(p, "utf-8").trim();
+}
+
+function loadModels() {
+  const p = path.resolve(__dirname, "models.txt");
+  if (!fs.existsSync(p)) {
+    throw new Error("models.txt が見つかりません");
+  }
+  return fs
+    .readFileSync(p, "utf-8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+function loadImages() {
+  const dir = path.resolve(__dirname, "images");
+  if (!fs.existsSync(dir)) {
+    throw new Error("images/ ディレクトリが見つかりません");
+  }
+  const exts = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
+  const files = fs.readdirSync(dir).filter((f) => {
+    return exts.includes(path.extname(f).toLowerCase());
+  });
+  if (files.length === 0) {
+    throw new Error("images/ ディレクトリに画像ファイルがありません");
+  }
+  return files.map((f) => ({
+    name: f,
+    path: path.join(dir, f),
+  }));
+}
+
+// --- CSV書き込み ---
+
+class CsvWriter {
+  constructor(filePath) {
+    this.filePath = filePath;
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    // BOM + ヘッダー行
+    fs.writeFileSync(
+      filePath,
+      "\uFEFF" + "画像ファイル名,使用モデル,レスポンス\n",
+      "utf-8"
+    );
+  }
+
+  append(imageName, model, response) {
+    const line = [
+      escapeCsv(imageName),
+      escapeCsv(model),
+      escapeCsv(response),
+    ].join(",");
+    fs.appendFileSync(this.filePath, line + "\n", "utf-8");
+  }
+}
+
+// --- Genspark 操作 ---
+
+/**
+ * ログイン済みか判定する
+ * リダイレクトでログインページに飛ばされたら未ログインとする
+ */
+async function checkLogin(page) {
+  log("ログイン状態を確認中...");
+  await page.goto(GENSPARK_CHAT_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: TIMEOUT_NAV,
+  });
+  await sleep(3000);
+
+  const currentUrl = page.url();
+  // ログインページにリダイレクトされた場合
+  if (
+    currentUrl.includes("/login") ||
+    currentUrl.includes("/signin") ||
+    currentUrl.includes("/auth")
+  ) {
+    return false;
+  }
+
+  // TODO: 上記のURLパターンで判定できない場合は、ここに追加の判定ロジックを入れてください
+  //       例: 特定の要素（ユーザーアイコン等）の存在チェック
+  //       const userIcon = await page.$('.user-avatar');
+  //       if (!userIcon) return false;
+
+  return true;
+}
+
+/**
+ * 新しいチャットページに移動する
+ */
+async function navigateToNewChat(page) {
+  log("新しいチャットを開始...");
+  await page.goto(GENSPARK_CHAT_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: TIMEOUT_NAV,
+  });
+  await sleep(3000);
+}
+
+/**
+ * モデルを選択する
+ * @returns {boolean} 選択成功かどうか
+ */
+async function selectModel(page, modelName) {
+  log(`モデル選択: ${modelName}`);
+
+  // 1. モデル選択ボタンをクリック
+  const modelBtn = await page.$(".model-selection-button");
+  if (!modelBtn) {
+    log("  [エラー] model-selection-button が見つかりません");
+    return false;
+  }
+  await modelBtn.click();
+  await sleep(DELAY_BETWEEN_ACTIONS);
+
+  // 2. ドロップダウン内からモデル名を探してクリック
+  //    テキスト完全一致で探す
+  // TODO: ドロップダウン内のモデル名要素のセレクタが異なる場合はここを修正してください
+  //       現在はドロップダウン内の全テキスト要素からmodelNameと完全一致するものを探しています
+  const modelItem = await page.locator(`text="${modelName}"`).first();
+  try {
+    await modelItem.waitFor({ state: "visible", timeout: 5000 });
+    await modelItem.click();
+    log(`  モデル "${modelName}" を選択しました`);
+    await sleep(DELAY_BETWEEN_ACTIONS);
+    return true;
+  } catch {
+    log(`  [エラー] モデル "${modelName}" がドロップダウン内に見つかりません。スキップします。`);
+    // ドロップダウンを閉じるためにEscキーを押す
+    await page.keyboard.press("Escape");
+    await sleep(500);
+    return false;
+  }
+}
+
+/**
+ * 画像をアップロードする
+ */
+async function uploadImage(page, imagePath) {
+  log(`画像アップロード: ${path.basename(imagePath)}`);
+
+  // 1. +ボタンをクリック
+  const addBtn = await page.$(".add-entry-btn");
+  if (!addBtn) {
+    throw new Error("add-entry-btn (+ボタン) が見つかりません");
+  }
+  await addBtn.click();
+  await sleep(DELAY_BETWEEN_ACTIONS);
+
+  // 2. ファイル選択ダイアログの準備
+  //    「ローカルファイルを参照」ボタンを押すとファイル選択ダイアログが開くので、
+  //    事前にfileChooserイベントをキャッチする
+  const fileChooserPromise = page.waitForEvent("filechooser", {
+    timeout: 10000,
+  });
+
+  // 3. 「ローカルファイルを参照」オプションをクリック
+  // TODO: add-entry-option-item が複数ある場合、「ローカルファイル」のテキストを持つものを選ぶ必要があります
+  //       現在は最初の add-entry-option-item をクリックしています。
+  //       正しいものが選ばれない場合は、テキストで絞り込むかインデックスを変更してください。
+  const optionItems = await page.$$(".add-entry-option-item");
+  if (optionItems.length === 0) {
+    throw new Error("add-entry-option-item が見つかりません");
+  }
+
+  // テキストに「ローカル」「ファイル」「Local」「File」「Upload」のいずれかを含むものを探す
+  let targetOption = null;
+  for (const item of optionItems) {
+    const text = await item.textContent();
+    if (
+      text.includes("ローカル") ||
+      text.includes("ファイル") ||
+      text.toLowerCase().includes("local") ||
+      text.toLowerCase().includes("file") ||
+      text.toLowerCase().includes("upload")
+    ) {
+      targetOption = item;
+      break;
+    }
+  }
+  if (!targetOption) {
+    // テキストで見つからなければ最初のアイテムを使う
+    log(
+      "  [警告] テキストからローカルファイル参照ボタンを特定できませんでした。最初のオプションを使用します。"
+    );
+    targetOption = optionItems[0];
+  }
+  await targetOption.click();
+
+  // 4. ファイルを選択
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles(imagePath);
+  log("  画像ファイルを選択しました");
+  await sleep(DELAY_BETWEEN_ACTIONS);
+}
+
+/**
+ * プロンプトを入力して送信する
+ */
+async function sendPrompt(page, promptText) {
+  log("プロンプトを入力して送信...");
+
+  // TODO: テキスト入力欄のセレクタが異なる場合はここを修正してください
+  //       現在は textarea, [contenteditable], input[type="text"] の順で探しています
+  let inputArea = await page.$('textarea, [contenteditable="true"], input[type="text"]');
+  if (!inputArea) {
+    // もう少し広く探す
+    inputArea = await page.$('[role="textbox"]');
+  }
+  if (!inputArea) {
+    throw new Error("テキスト入力欄が見つかりません");
+  }
+
+  await inputArea.click();
+  await sleep(300);
+  await inputArea.fill(promptText);
+  await sleep(500);
+
+  // Enterキーで送信
+  await page.keyboard.press("Enter");
+  log("  送信しました");
+}
+
+/**
+ * 回答が完了するまで待機し、テキストを取得する
+ * 送信ボタンが停止ボタンに切り替わり、再び送信ボタンに戻ったら完了と判定
+ */
+async function waitForResponseAndExtract(page) {
+  log("回答を待機中...");
+
+  // --- 停止ボタンの検出 → 消滅で回答完了を判定 ---
+  // TODO: 停止ボタンのセレクタが不明なため、以下のパターンで検出を試みます。
+  //       動作しない場合は、実際の停止ボタンの要素を確認し、セレクタを修正してください。
+  //       候補: '.stop-button', '[aria-label="Stop"]', 'button[title="Stop"]',
+  //             '.stop-generating', 'button:has-text("Stop")', 'button:has-text("停止")'
+  const stopButtonSelectors = [
+    'button.stop-button',
+    'button[aria-label="Stop"]',
+    'button[aria-label="stop"]',
+    'button:has-text("Stop")',
+    'button:has-text("停止")',
+    '.stop-generating',
+    '[class*="stop"]',
+  ];
+
+  // まず停止ボタンが表示されるのを待つ（=生成開始）
+  let stopButtonFound = false;
+  let stopSelector = null;
+
+  for (let i = 0; i < 20; i++) {
+    for (const sel of stopButtonSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el && (await el.isVisible())) {
+          stopButtonFound = true;
+          stopSelector = sel;
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (stopButtonFound) break;
+    await sleep(500);
+  }
+
+  if (stopButtonFound) {
+    log(`  停止ボタンを検出 (${stopSelector})。回答生成中...`);
+    // 停止ボタンが消えるまで待つ（=生成完了）
+    try {
+      await page.waitForSelector(stopSelector, {
+        state: "hidden",
+        timeout: TIMEOUT_RESPONSE,
+      });
+      log("  回答生成が完了しました");
+    } catch {
+      log("  [警告] 停止ボタンの消滅待ちがタイムアウトしました。現時点の回答を取得します。");
+    }
+  } else {
+    // TODO: 停止ボタンが見つからない場合のフォールバック
+    //       ここでは一定時間待機してから回答を取得します。
+    //       実際の停止ボタンのセレクタを特定して上のstopButtonSelectorsに追加してください。
+    log(
+      "  [警告] 停止ボタンが見つかりませんでした。フォールバック: 一定時間待機します。"
+    );
+    log(
+      "  TODO: 停止ボタンのセレクタを確認し、stopButtonSelectors に追加してください。"
+    );
+
+    // フォールバック: assistant要素が表示されるまで待ち、
+    // その後テキストが変化しなくなるまで待つ
+    await sleep(5000);
+    let prevText = "";
+    let stableCount = 0;
+    for (let i = 0; i < 60; i++) {
+      // 最大60回 x 3秒 = 3分
+      const el = await page.$(".assistant.plain-text");
+      const currentText = el ? await el.textContent() : "";
+      if (currentText.length > 0 && currentText === prevText) {
+        stableCount++;
+        if (stableCount >= 3) {
+          log("  テキストが安定しました。回答完了と判定します。");
+          break;
+        }
+      } else {
+        stableCount = 0;
+      }
+      prevText = currentText;
+      await sleep(3000);
+    }
+  }
+
+  await sleep(2000); // 完全なレンダリング待ち
+
+  // 回答テキストを取得
+  // 複数のassistant要素がある場合、最後のものを取得
+  const assistantElements = await page.$$(".assistant.plain-text");
+  if (assistantElements.length === 0) {
+    log("  [エラー] 回答テキストの要素が見つかりませんでした");
+    return "[エラー] 回答テキストの取得に失敗しました";
+  }
+
+  const lastAssistant = assistantElements[assistantElements.length - 1];
+  const responseText = await lastAssistant.textContent();
+  const trimmed = responseText.trim();
+  log(`  回答取得完了 (${trimmed.length}文字)`);
+  return trimmed;
+}
+
+// --- メイン処理 ---
+
+async function main() {
+  console.log("=== Genspark Model Comparator ===\n");
+
+  // 設定読み込み
+  const prompt = loadPrompt();
+  const models = loadModels();
+  const images = loadImages();
+
+  log(`プロンプト: ${prompt.substring(0, 50)}${prompt.length > 50 ? "..." : ""}`);
+  log(`モデル数: ${models.length} (${models.join(", ")})`);
+  log(`画像数: ${images.length} (${images.map((i) => i.name).join(", ")})`);
+  log(`合計実行回数: ${models.length * images.length}\n`);
+
+  // CSV準備
+  const csvPath = path.resolve(__dirname, "dest", `${today()}.csv`);
+  const csv = new CsvWriter(csvPath);
+  log(`出力先: ${csvPath}\n`);
+
+  // ブラウザ起動 (ヘッドレスモード無効)
+  log("ブラウザを起動中...");
+  const browser = await chromium.launch({
+    headless: false,
+    // Windowsのデフォルトのchromium を使用
+    // 外部のChromeを使う場合は以下のようにchannelを指定:
+    // channel: 'chrome',
+  });
+
+  const context = await browser.newContext({
+    // ブラウザの状態を保持するためstorageStateを指定可能
+    // 事前にログイン済みのstateを保存している場合:
+    // storageState: path.resolve(__dirname, 'auth.json'),
+  });
+  const page = await context.newPage();
+
+  // ログインチェック
+  const isLoggedIn = await checkLogin(page);
+  if (!isLoggedIn) {
+    log("[致命的エラー] Gensparkにログインしていません。実行を中止します。");
+    log("ブラウザでGensparkにログインしてから再実行してください。");
+    log(
+      'ヒント: 手動ログイン後に npx playwright codegen で auth.json を取得し、'
+    );
+    log("       context生成時に storageState として渡すことも可能です。");
+    await browser.close();
+    process.exit(1);
+  }
+  log("ログイン確認OK\n");
+
+  // 各画像 x 各モデル で実行
+  let successCount = 0;
+  let skipCount = 0;
+  const totalCount = images.length * models.length;
+  let currentNum = 0;
+
+  for (const image of images) {
+    for (const model of models) {
+      currentNum++;
+      const progress = `[${currentNum}/${totalCount}]`;
+      log(`\n${"=".repeat(50)}`);
+      log(`${progress} 画像: ${image.name} / モデル: ${model}`);
+      log("=".repeat(50));
+
+      try {
+        // 1. 新しいチャットに移動
+        await navigateToNewChat(page);
+
+        // 2. モデルを選択
+        const modelSelected = await selectModel(page, model);
+        if (!modelSelected) {
+          const errMsg = `[スキップ] モデル "${model}" が見つかりませんでした`;
+          log(errMsg);
+          csv.append(image.name, model, errMsg);
+          skipCount++;
+          continue;
+        }
+
+        // 3. 画像をアップロード
+        await uploadImage(page, image.path);
+
+        // 4. プロンプトを入力して送信
+        await sendPrompt(page, prompt);
+
+        // 5. 回答を待機して取得
+        const response = await waitForResponseAndExtract(page);
+
+        // 6. CSVに書き込み
+        csv.append(image.name, model, response);
+        successCount++;
+        log(`${progress} 完了!`);
+      } catch (err) {
+        const errMsg = `[エラー] ${err.message}`;
+        log(`${progress} ${errMsg}`);
+        csv.append(image.name, model, errMsg);
+        skipCount++;
+      }
+    }
+  }
+
+  // 完了
+  log(`\n${"=".repeat(50)}`);
+  log("全処理完了!");
+  log(`  成功: ${successCount} / ${totalCount}`);
+  log(`  スキップ/エラー: ${skipCount} / ${totalCount}`);
+  log(`  出力ファイル: ${csvPath}`);
+  log("=".repeat(50));
+
+  await browser.close();
+}
+
+// --- 実行 ---
+main().catch((err) => {
+  console.error("[致命的エラー]", err);
+  process.exit(1);
+});

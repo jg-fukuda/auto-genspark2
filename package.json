@@ -1,0 +1,13 @@
+{
+  "name": "genspark-model-comparator",
+  "version": "1.0.0",
+  "description": "Gensparkの複数AIモデルに画像+プロンプトを送信し回答を比較するツール",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "setup": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.42.0"
+  }
+}
