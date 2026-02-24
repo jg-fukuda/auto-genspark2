@@ -11,6 +11,7 @@ const readline = require("readline");
 // --- 定数 ---
 const GENSPARK_CHAT_URL = "https://www.genspark.ai/agents?type=ai_chat";
 const TIMEOUT_NAV = 30000;
+const TIMEOUT_NAV_LOGIN = 180000; // 手動ログイン後のページ遷移待ち最大3分
 const TIMEOUT_RESPONSE = 180000; // 回答待ち最大3分
 const DELAY_BETWEEN_ACTIONS = 1500; // 操作間の待ち時間(ms)
 
@@ -135,11 +136,11 @@ class CsvWriter {
  * ログイン済みか判定する
  * リダイレクトでログインページに飛ばされたら未ログインとする
  */
-async function checkLogin(page) {
+async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
   log("ログイン状態を確認中...");
   await page.goto(GENSPARK_CHAT_URL, {
     waitUntil: "domcontentloaded",
-    timeout: TIMEOUT_NAV,
+    timeout: navTimeout,
   });
   await sleep(3000);
 
@@ -464,8 +465,8 @@ async function main() {
     log("開いたブラウザ上で手動ログインしてください。");
     await waitForEnter("\n>>> ログインが完了したら Enter を押してください... ");
 
-    // 再度チャットページに移動してログイン確認
-    isLoggedIn = await checkLogin(page);
+    // 再度チャットページに移動してログイン確認（手動操作後なのでタイムアウトを長めに）
+    isLoggedIn = await checkLogin(page, TIMEOUT_NAV_LOGIN);
     if (!isLoggedIn) {
       log("[致命的エラー] ログインが確認できませんでした。実行を中止します。");
       await browser.close();
