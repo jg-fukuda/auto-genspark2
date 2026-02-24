@@ -201,6 +201,20 @@ async function selectModel(page, modelName) {
     await modelItem.click();
     log(`  モデル "${modelName}" を選択しました`);
     await sleep(DELAY_BETWEEN_ACTIONS);
+
+    // ドロップダウンが残っていたら閉じる
+    const dropdown = await page.$(".model-dropdown");
+    if (dropdown && (await dropdown.isVisible())) {
+      log("  ドロップダウンが残っています。閉じます...");
+      await page.keyboard.press("Escape");
+      await sleep(1000);
+      // それでも残っていたら画面の別の場所をクリック
+      const still = await page.$(".model-dropdown");
+      if (still && (await still.isVisible())) {
+        await page.mouse.click(0, 0);
+        await sleep(1000);
+      }
+    }
     return true;
   } catch {
     log(`  [エラー] モデル "${modelName}" がドロップダウン内に見つかりません。スキップします。`);
