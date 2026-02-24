@@ -256,19 +256,29 @@ async function tryUploadImage(page, imagePath) {
   }
 
   // 4. fileChooser イベントを待ちつつオプションをクリック
-  const fileChooserPromise = page.waitForEvent("filechooser", {
-    timeout: 10000,
-  });
+  //    Promise を先に作り .catch で未ハンドル reject を防ぐ
+  let fileChooserCaptured = null;
+  let fileChooserError = null;
+  const fileChooserPromise = page
+    .waitForEvent("filechooser", { timeout: 15000 })
+    .then((fc) => { fileChooserCaptured = fc; })
+    .catch((err) => { fileChooserError = err; });
+
   await targetOption.click();
+  await fileChooserPromise; // resolve でも reject でもここで完了を待つ
+
+  if (fileChooserError || !fileChooserCaptured) {
+    log("  [エラー] ファイル選択ダイアログが開きませんでした");
+    return false;
+  }
 
   try {
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles(imagePath);
+    await fileChooserCaptured.setFiles(imagePath);
     log("  画像ファイルを選択しました");
     await sleep(DELAY_BETWEEN_ACTIONS);
     return true;
   } catch {
-    log("  [エラー] ファイル選択ダイアログが開きませんでした");
+    log("  [エラー] ファイルの設定に失敗しました");
     return false;
   }
 }
