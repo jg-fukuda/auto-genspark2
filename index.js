@@ -211,54 +211,29 @@ async function selectModel(page, modelName) {
 }
 
 /**
- * 画像をアップロードする
+ * +ボタン → ローカルファイル参照 の一連の操作を試みる
+ * @returns {boolean} fileChooser でファイル設定まで成功したか
  */
-async function uploadImage(page, imagePath) {
-  log(`画像アップロード: ${path.basename(imagePath)}`);
-
+async function tryUploadImage(page, imagePath) {
   // 1. +ボタンをクリック
   const addBtn = await page.$(".add-entry-btn");
   if (!addBtn) {
-    throw new Error("add-entry-btn (+ボタン) が見つかりません");
+    log("  [エラー] add-entry-btn (+ボタン) が見つかりません");
+    return false;
   }
   await addBtn.click();
   await sleep(DELAY_BETWEEN_ACTIONS);
 
-  // 2. ファイル選択ダイアログの準備
-  //    「ローカルファイルを参照」ボタンを押すとファイル選択ダイアログが開くので、
-  //    事前にfileChooserイベントをキャッチする
-  const fileChooserPromise = page.waitForEvent("filechooser", {
-    timeout: 10000,
-  });
-
-  // 3. 「ローカルファイルを参照」オプションをクリック
-  // TODO: add-entry-option-item が複数ある場合、「ローカルファイル」のテキストを持つものを選ぶ必要があります
-  //       現在は最初の add-entry-option-item をクリックしています。
-  //       正しいものが選ばれない場合は、テキストで絞り込むかインデックスを変更してください。
-  let optionItems = await page.$$(".add-entry-option-item");
+  // 2. add-entry-option-item を探す
+  const optionItems = await page.$$(".add-entry-option-item");
   if (optionItems.length === 0) {
-    log("  [警告] add-entry-option-item が見つかりません。手動操作を待機します。");
-    log("  ブラウザ上で状況を確認してください（ログイン切れの可能性あり）。");
-    await waitForEnter("\n>>> 問題を解消したら Enter を押してください... ");
-
-    // ページをリロードして再試行
-    await navigateToNewChat(page);
-    await sleep(DELAY_BETWEEN_ACTIONS);
-
-    // +ボタンを再クリック
-    const retryAddBtn = await page.$(".add-entry-btn");
-    if (retryAddBtn) {
-      await retryAddBtn.click();
-      await sleep(DELAY_BETWEEN_ACTIONS);
-    }
-
-    optionItems = await page.$$(".add-entry-option-item");
-    if (optionItems.length === 0) {
-      throw new Error("add-entry-option-item が再試行後も見つかりません");
-    }
+    log("  [エラー] add-entry-option-item が見つかりません");
+    return false;
   }
 
-  // テキストに「ローカル」「ファイル」「Local」「File」「Upload」のいずれかを含むものを探す
+  // 3. 「ローカルファイルを参照」オプションを特定
+  // TODO: add-entry-option-item が複数ある場合、テキストで絞り込んでいます。
+  //       正しいものが選ばれない場合は、テキストやインデックスを変更してください。
   let targetOption = null;
   for (const item of optionItems) {
     const text = await item.textContent();
@@ -274,19 +249,59 @@ async function uploadImage(page, imagePath) {
     }
   }
   if (!targetOption) {
-    // テキストで見つからなければ最初のアイテムを使う
     log(
       "  [警告] テキストからローカルファイル参照ボタンを特定できませんでした。最初のオプションを使用します。"
     );
     targetOption = optionItems[0];
   }
+
+  // 4. fileChooser イベントを待ちつつオプションをクリック
+  const fileChooserPromise = page.waitForEvent("filechooser", {
+    timeout: 10000,
+  });
   await targetOption.click();
 
-  // 4. ファイルを選択
-  const fileChooser = await fileChooserPromise;
-  await fileChooser.setFiles(imagePath);
-  log("  画像ファイルを選択しました");
-  await sleep(DELAY_BETWEEN_ACTIONS);
+  try {
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles(imagePath);
+    log("  画像ファイルを選択しました");
+    await sleep(DELAY_BETWEEN_ACTIONS);
+    return true;
+  } catch {
+    log("  [エラー] ファイル選択ダイアログが開きませんでした");
+    return false;
+  }
+}
+
+/**
+ * 画像をアップロードする
+ * 失敗時は手動操作を待って最大3回リトライする
+ */
+async function uploadImage(page, imagePath) {
+  log(`画像アップロード: ${path.basename(imagePath)}`);
+
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const success = await tryUploadImage(page, imagePath);
+    if (success) return;
+
+    // 最終試行で失敗したら例外
+    if (attempt >= MAX_RETRIES) {
+      throw new Error(
+        `画像アップロードに ${MAX_RETRIES} 回失敗しました。スキップします。`
+      );
+    }
+
+    log("  [警告] 画像アップロードに失敗しました。手動操作を待機します。");
+    log("  ブラウザ上でログイン状態や画面の状態を確認してください。");
+    await waitForEnter(
+      `\n>>> 問題を解消したら Enter を押してください (リトライ ${attempt}/${MAX_RETRIES})... `
+    );
+
+    // リトライ前にチャットページを開き直す
+    await navigateToNewChat(page);
+    await sleep(DELAY_BETWEEN_ACTIONS);
+  }
 }
 
 /**
