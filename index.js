@@ -9,6 +9,8 @@ const path = require("path");
 const readline = require("readline");
 
 // --- 定数 ---
+const GENSPARK_URL = "https://www.genspark.ai";
+const GENSPARK_LOGIN_URL = "https://www.genspark.ai/login";
 const GENSPARK_CHAT_URL = "https://www.genspark.ai/agents?type=ai_chat";
 const TIMEOUT_NAV = 30000;
 const TIMEOUT_NAV_LOGIN = 180000; // 手動ログイン後のページ遷移待ち最大3分
@@ -64,6 +66,36 @@ function waitForEnter(message) {
 }
 
 // --- 設定ファイル読み込み ---
+
+/**
+ * genspark.txt から認証情報を読み込む
+ * 形式: id=xxx / pass=xxx の2行
+ */
+function loadCredentials() {
+  const p = path.resolve(__dirname, "genspark.txt");
+  if (!fs.existsSync(p)) {
+    throw new Error(
+      "genspark.txt が見つかりません。genspark.txt を作成し id= と pass= を記入してください"
+    );
+  }
+  const lines = fs.readFileSync(p, "utf-8").split("\n");
+  let id = "";
+  let pass = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("id=")) {
+      id = trimmed.substring(3).trim();
+    } else if (trimmed.startsWith("pass=")) {
+      pass = trimmed.substring(5).trim();
+    }
+  }
+  if (!id || !pass) {
+    throw new Error(
+      "genspark.txt に id または pass が設定されていません"
+    );
+  }
+  return { id, pass };
+}
 
 function loadPrompt() {
   const p = path.resolve(__dirname, "prompt.txt");
@@ -161,6 +193,86 @@ async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
   //       if (!userIcon) return false;
 
   return true;
+}
+
+/**
+ * 自動ログインを実行する
+ * 1. ログインページに遷移
+ * 2. "Login with email" ボタンをクリック
+ * 3. email / password を入力して送信
+ * 4. チャットページにリダイレクトされるまで待機
+ */
+async function performLogin(page, credentials) {
+  log("自動ログインを開始...");
+
+  // 1. ログインページに遷移
+  await page.goto(GENSPARK_LOGIN_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: TIMEOUT_NAV,
+  });
+  await sleep(3000);
+
+  // 2. "Login with email" ボタンをクリック
+  // TODO: ボタンのセレクタが異なる場合はここを修正してください
+  const emailLoginBtn = page.locator('button:has-text("Login with email"), button:has-text("login with email"), button:has-text("Email")');
+  try {
+    await emailLoginBtn.first().waitFor({ state: "visible", timeout: 10000 });
+    await emailLoginBtn.first().click();
+    log("  'Login with email' ボタンをクリックしました");
+    await sleep(DELAY_BETWEEN_ACTIONS);
+  } catch {
+    log("  [警告] 'Login with email' ボタンが見つかりません。入力欄が既に表示されている可能性があります。");
+  }
+
+  // 3. email を入力
+  const emailInput = await page.waitForSelector("#email", {
+    state: "visible",
+    timeout: 10000,
+  });
+  await emailInput.click();
+  await sleep(300);
+  await emailInput.fill(credentials.id);
+  log("  メールアドレスを入力しました");
+  await sleep(500);
+
+  // 4. password を入力
+  const passInput = await page.waitForSelector("#password", {
+    state: "visible",
+    timeout: 10000,
+  });
+  await passInput.click();
+  await sleep(300);
+  await passInput.fill(credentials.pass);
+  log("  パスワードを入力しました");
+  await sleep(500);
+
+  // 5. ログインボタンをクリック (フォーム内の submit ボタン)
+  // TODO: ログインボタンのセレクタが異なる場合はここを修正してください
+  const submitBtn = page.locator(
+    'button[type="submit"], button:has-text("Log in"), button:has-text("Login"), button:has-text("Sign in")'
+  );
+  try {
+    await submitBtn.first().waitFor({ state: "visible", timeout: 5000 });
+    await submitBtn.first().click();
+    log("  ログインボタンをクリックしました");
+  } catch {
+    // submit ボタンが見つからなければ Enter で送信
+    log("  ログインボタンが見つかりません。Enter キーで送信します。");
+    await page.keyboard.press("Enter");
+  }
+
+  // 6. ログイン完了を待機 (ログインページから離れるまで)
+  log("  ログイン処理を待機中...");
+  try {
+    await page.waitForURL(
+      (url) => !url.toString().includes("/login") && !url.toString().includes("/signin"),
+      { timeout: TIMEOUT_NAV_LOGIN }
+    );
+    log("  ログインに成功しました");
+  } catch {
+    log("  [警告] ログイン後のリダイレクトを検出できませんでした");
+  }
+  await sleep(3000);
 }
 
 /**
@@ -498,19 +610,30 @@ async function main() {
   });
   const page = await context.newPage();
 
-  // ログインチェック（未ログインなら手動ログインを待機）
+  // 認証情報読み込み
+  const credentials = loadCredentials();
+  log(`認証情報を読み込みました (id: ${credentials.id})\n`);
+
+  // ログインチェック → 未ログインなら自動ログイン → それでもダメなら手動待機
   let isLoggedIn = await checkLogin(page);
   if (!isLoggedIn) {
-    log("[警告] Gensparkにログインしていません。");
-    log("開いたブラウザ上で手動ログインしてください。");
-    await waitForEnter("\n>>> ログインが完了したら Enter を押してください... ");
+    log("未ログイン状態です。自動ログインを試みます...");
+    await performLogin(page, credentials);
 
-    // 再度チャットページに移動してログイン確認（手動操作後なのでタイムアウトを長めに）
+    // 自動ログイン後に再チェック
     isLoggedIn = await checkLogin(page, TIMEOUT_NAV_LOGIN);
     if (!isLoggedIn) {
-      log("[致命的エラー] ログインが確認できませんでした。実行を中止します。");
-      await browser.close();
-      process.exit(1);
+      // 自動ログイン失敗時は手動フォールバック
+      log("[警告] 自動ログインに失敗しました。");
+      log("開いたブラウザ上で手動ログインしてください。");
+      await waitForEnter("\n>>> ログインが完了したら Enter を押してください... ");
+
+      isLoggedIn = await checkLogin(page, TIMEOUT_NAV_LOGIN);
+      if (!isLoggedIn) {
+        log("[致命的エラー] ログインが確認できませんでした。実行を中止します。");
+        await browser.close();
+        process.exit(1);
+      }
     }
   }
   log("ログイン確認OK\n");

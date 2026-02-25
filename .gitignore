@@ -1,5 +1,6 @@
 node_modules/
 dest/
 auth.json
+genspark.txt
 images/*
 !images/.gitkeep
