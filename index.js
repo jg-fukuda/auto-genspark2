@@ -167,8 +167,7 @@ class CsvWriter {
 
 /**
  * ログイン済み（課金済み）か判定する
- * - ログインページにリダイレクトされたら未ログイン
- * - .upgrade-prompt が表示されていたら未ログイン（or 無料アカウント）
+ * .upgrade-prompt が表示されていたら未ログイン（or 無料アカウント）
  */
 async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
   log("ログイン状態を確認中...");
@@ -177,17 +176,6 @@ async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
     timeout: navTimeout,
   });
   await sleep(5000);
-
-  const currentUrl = page.url();
-  // ログインページにリダイレクトされた場合
-  if (
-    currentUrl.includes("/login") ||
-    currentUrl.includes("/signin") ||
-    currentUrl.includes("/auth")
-  ) {
-    log("  → ログインページにリダイレクトされました");
-    return false;
-  }
 
   // 「プラスにアップグレード」が表示されていたら未ログイン扱い
   const upgradePrompt = await page.$(".upgrade-prompt");
