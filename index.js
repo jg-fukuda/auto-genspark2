@@ -166,8 +166,9 @@ class CsvWriter {
 // --- Genspark 操作 ---
 
 /**
- * ログイン済みか判定する
- * リダイレクトでログインページに飛ばされたら未ログインとする
+ * ログイン済み（課金済み）か判定する
+ * - ログインページにリダイレクトされたら未ログイン
+ * - .upgrade-prompt が表示されていたら未ログイン（or 無料アカウント）
  */
 async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
   log("ログイン状態を確認中...");
@@ -175,7 +176,7 @@ async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
     waitUntil: "domcontentloaded",
     timeout: navTimeout,
   });
-  await sleep(3000);
+  await sleep(5000);
 
   const currentUrl = page.url();
   // ログインページにリダイレクトされた場合
@@ -184,13 +185,19 @@ async function checkLogin(page, navTimeout = TIMEOUT_NAV) {
     currentUrl.includes("/signin") ||
     currentUrl.includes("/auth")
   ) {
+    log("  → ログインページにリダイレクトされました");
     return false;
   }
 
-  // TODO: 上記のURLパターンで判定できない場合は、ここに追加の判定ロジックを入れてください
-  //       例: 特定の要素（ユーザーアイコン等）の存在チェック
-  //       const userIcon = await page.$('.user-avatar');
-  //       if (!userIcon) return false;
+  // 「プラスにアップグレード」が表示されていたら未ログイン扱い
+  const upgradePrompt = await page.$(".upgrade-prompt");
+  if (upgradePrompt) {
+    const isVisible = await upgradePrompt.isVisible();
+    if (isVisible) {
+      log("  → upgrade-prompt が検出されました（未ログインまたは無料アカウント）");
+      return false;
+    }
+  }
 
   return true;
 }
