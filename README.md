@@ -34,14 +34,16 @@ npm run setup
 
 ```
 .
-├── index.js          # メインスクリプト
+├── index.js              # メインスクリプト
 ├── package.json
-├── prompt.txt        # プロンプト本文（※ 編集してください）
-├── models.txt        # 使用するモデル名（改行区切り、※ 編集してください）
-├── images/           # 比較対象の画像を入れるフォルダ
+├── genspark.txt.example  # 認証情報テンプレート（※ コピーして編集）
+├── genspark.txt          # 認証情報（※ .gitignore 対象）
+├── prompt.txt            # プロンプト本文（※ 編集してください）
+├── models.txt            # 使用するモデル名（改行区切り、※ 編集してください）
+├── images/               # 比較対象の画像を入れるフォルダ
 │   ├── sample1.png
 │   └── sample2.jpg
-├── dest/             # CSV 出力先（自動作成されます）
+├── dest/                 # CSV 出力先（自動作成されます）
 │   └── 2026-02-24_153012.csv
 └── README.md
 ```
@@ -49,6 +51,20 @@ npm run setup
 ## 使い方
 
 ### 1. 設定ファイルの準備
+
+#### `genspark.txt`（認証情報）
+テンプレートをコピーして、Genspark のメールアドレスとパスワードを記入します。
+
+```bash
+cp genspark.txt.example genspark.txt
+```
+
+```
+id=your_email@example.com
+pass=your_password
+```
+
+> このファイルは `.gitignore` で除外されているため、リポジトリにコミットされません。
 
 #### `prompt.txt`
 画像と一緒に送信するプロンプトを記述します。
@@ -71,15 +87,7 @@ Gemini 2.0 Flash
 比較したい画像ファイルをこのフォルダに入れてください。
 対応形式: `.png` `.jpg` `.jpeg` `.gif` `.webp` `.bmp`
 
-### 2. Genspark にログイン
-
-**実行前に**、ブラウザ（普段使っているもの）で [Genspark](https://www.genspark.ai/) にログインしておいてください。
-
-> 注意: Playwright は独自のブラウザプロファイルで起動するため、
-> 初回は Playwright が起動したブラウザ上でもログインが必要です。
-> ログイン情報を永続化したい場合は、下記「ログイン情報の永続化」を参照してください。
-
-### 3. 実行
+### 2. 実行
 
 ```bash
 npm start
@@ -87,7 +95,7 @@ npm start
 
 ブラウザが自動的に起動し、以下の処理が行われます:
 
-1. ログイン状態を確認（未ログインなら中止）
+1. ログイン状態を確認（未ログインなら `genspark.txt` の認証情報で自動ログイン）
 2. 各画像 × 各モデルの組み合わせで順に実行:
    - 新しいチャットを開始
    - モデルを選択
@@ -96,40 +104,24 @@ npm start
    - 回答を待って取得
 3. 結果を `dest/YYYY-MM-DD_HHmmss.csv` に出力
 
-### 4. 出力結果
+### 3. 出力結果
 
 `dest/` フォルダに当日の日付で CSV が生成されます。
 
-| 画像ファイル名 | 使用モデル | レスポンス |
-| --- | --- | --- |
-| photo1.png | GPT-4o | この画像には... |
-| photo1.png | Claude 3.5 Sonnet | 画像を分析すると... |
+| 画像ファイル名 | 使用モデル | 応答時間 | レスポンス |
+| --- | --- | --- | --- |
+| photo1.png | GPT-4o | 12.3秒 | この画像には... |
+| photo1.png | Claude 3.5 Sonnet | 8.7秒 | 画像を分析すると... |
 
 CSV は UTF-8 (BOM 付き) で出力されるため、Excel でそのまま開けます。
 
-## ログイン情報の永続化（オプション）
-
-毎回ログインするのが面倒な場合、以下の手順でセッション情報を保存できます。
-
-```bash
-# 1. 手動でログインしてセッションを保存
-npx playwright open --save-storage=auth.json https://www.genspark.ai/
-
-# (ブラウザが開くので、Genspark にログインしてからブラウザを閉じる)
-```
-
-次に `index.js` の以下の部分のコメントを外します:
-
-```javascript
-const context = await browser.newContext({
-  // ↓ この行のコメントを外す
-  storageState: path.resolve(__dirname, 'auth.json'),
-});
-```
-
-これにより、保存済みのセッション情報で自動ログインされます。
-
 ## トラブルシューティング
+
+### 自動ログインに失敗する
+
+- `genspark.txt` の `id=` と `pass=` が正しく記入されているか確認してください。
+- 自動ログインに失敗した場合は、ブラウザが開いたまま手動ログインを促すメッセージが表示されます。
+  手動でログインした後、コンソールで Enter を押すと処理が再開されます。
 
 ### 「停止ボタンが見つかりません」の警告が出る
 
