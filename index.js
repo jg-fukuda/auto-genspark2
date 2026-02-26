@@ -564,7 +564,7 @@ async function waitForResponseAndExtract(page) {
 
   const lastAssistant = assistantElements[assistantElements.length - 1];
   const responseText = await lastAssistant.textContent();
-  const trimmed = responseText.trim();
+  const trimmed = responseText.trim().replace(/その他のアクション\s*$/, "").trim();
   log(`  回答取得完了 (${trimmed.length}文字)`);
   return trimmed;
 }
